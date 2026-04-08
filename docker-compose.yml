@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: threat
+      POSTGRES_PASSWORD: threatsecret
+      POSTGRES_DB: threat
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U threat -d threat"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  pipeline:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://threat:threatsecret@postgres:5432/threat
+      SYSTEM_LOG_PATH: /logs/system.log
+      SSH_LOG_PATH: /logs/auth.log
+      METRICS_HOST: "0.0.0.0"
+      METRICS_PORT: "8000"
+      INGEST_BATCH_SIZE: "50"
+      INGEST_FLUSH_INTERVAL_SEC: "0.3"
+      DETECTION_INTERVAL_SEC: "8"
+      BRUTE_FORCE_THRESHOLD: "5"
+      BRUTE_FORCE_WINDOW_MINUTES: "5"
+      CREDENTIAL_STUFFING_MIN_USERS: "3"
+      CREDENTIAL_STUFFING_WINDOW_MINUTES: "5"
+      ALERT_COOLDOWN_SEC: "60"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./sample_logs:/logs
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    depends_on:
+      - pipeline
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  postgres_data:
+  grafana_data:
