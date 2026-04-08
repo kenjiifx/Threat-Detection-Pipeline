@@ -29,6 +29,16 @@ def inc_ingested(source: str, n: int = 1) -> None:
     _events_ingested.labels(source=source).inc(n)
 
 
+_ingest_dropped = Counter(
+    "pipeline_ingest_events_dropped_total",
+    "Events dropped after repeated DB insert failures",
+)
+
+
+def inc_ingest_dropped(n: int = 1) -> None:
+    _ingest_dropped.inc(n)
+
+
 def inc_ssh_failed(subtype: str, n: int = 1) -> None:
     _ssh_failed.labels(subtype=subtype).inc(n)
 

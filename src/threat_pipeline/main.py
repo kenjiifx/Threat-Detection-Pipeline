@@ -10,7 +10,7 @@ import threading
 import time
 
 from threat_pipeline.config import load_settings
-from threat_pipeline.db import connect_pool
+from threat_pipeline.db import connect_pool_with_retry
 from threat_pipeline.detection import detection_loop
 from threat_pipeline.ingestion import batch_writer_loop, start_ingestion_threads
 from threat_pipeline.metrics import start_metrics_server
@@ -25,8 +25,8 @@ def main() -> None:
         stream=sys.stdout,
     )
     settings = load_settings()
-    conn_ingest = connect_pool(settings.database_url)
-    conn_detect = connect_pool(settings.database_url)
+    conn_ingest = connect_pool_with_retry(settings.database_url)
+    conn_detect = connect_pool_with_retry(settings.database_url)
 
     start_metrics_server(settings.metrics_host, settings.metrics_port)
     logger.info("Metrics listening on %s:%s", settings.metrics_host, settings.metrics_port)

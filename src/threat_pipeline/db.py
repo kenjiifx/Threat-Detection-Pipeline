@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from contextlib import contextmanager
+import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generator, Iterable
+from typing import Any, Iterable
 
 import psycopg
 from psycopg.rows import dict_row
@@ -29,13 +29,32 @@ class SecurityEventRow:
 
 def connect_pool(database_url: str) -> psycopg.Connection:
     """Single shared connection (sufficient for this pipeline scale)."""
-    return psycopg.connect(database_url, autocommit=True)
+    return psycopg.connect(database_url, autocommit=True, connect_timeout=15)
 
 
-@contextmanager
-def get_cursor(conn: psycopg.Connection) -> Generator[Any, None, None]:
-    with conn.cursor() as cur:
-        yield cur
+def connect_pool_with_retry(
+    database_url: str,
+    *,
+    attempts: int = 15,
+    delay_sec: float = 2.0,
+) -> psycopg.Connection:
+    """Wait for PostgreSQL (e.g. Docker health) before failing."""
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return connect_pool(database_url)
+        except psycopg.OperationalError as e:
+            last = e
+            logger.warning(
+                "PostgreSQL not ready (%s/%s): %s",
+                i + 1,
+                attempts,
+                e,
+            )
+            if i < attempts - 1:
+                time.sleep(delay_sec)
+    assert last is not None
+    raise last
 
 
 def insert_security_events_batch(conn: psycopg.Connection, rows: Iterable[SecurityEventRow]) -> int:

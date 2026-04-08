@@ -21,6 +21,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=4).read(8)",
+        ]
+      interval: 15s
+      timeout: 6s
+      retries: 5
+      start_period: 45s
     environment:
       DATABASE_URL: postgresql://threat:threatsecret@postgres:5432/threat
       SYSTEM_LOG_PATH: /logs/system.log
@@ -43,7 +55,8 @@ services:
   prometheus:
     image: prom/prometheus:v2.52.0
     depends_on:
-      - pipeline
+      pipeline:
+        condition: service_healthy
     ports:
       - "9090:9090"
     volumes:

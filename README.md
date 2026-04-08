@@ -22,4 +22,4 @@ Dashboard: **Threat Detection Pipeline** in Grafana.
 docker compose exec pipeline sh -c 'for i in 1 2 3 4 5 6; do echo "Jan 15 10:23:45 demo sshd[1234]: Failed password for root from 192.168.99.50 port 22 ssh2" >> /logs/auth.log; done'
 ```
 
-Tune thresholds and paths via env vars on the `pipeline` service in [`docker-compose.yml`](docker-compose.yml).
+Tune thresholds and paths via env vars on the `pipeline` service in [`docker-compose.yml`](docker-compose.yml). The process waits for PostgreSQL on startup and retries batch inserts before discarding rows; Grafana’s **Ingest drops** panel should stay at zero in normal operation.

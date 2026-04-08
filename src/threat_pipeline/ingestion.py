@@ -10,8 +10,10 @@ from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psycopg
+
 from threat_pipeline.db import SecurityEventRow
-from threat_pipeline.metrics import inc_ingested, inc_ssh_failed
+from threat_pipeline.metrics import inc_ingest_dropped, inc_ingested, inc_ssh_failed
 from threat_pipeline.parsers import ParsedLine, parse_ssh_line, parse_system_line
 
 logger = logging.getLogger(__name__)
@@ -59,7 +61,11 @@ def _tail_worker(
             user=pl.user,
             event_subtype=pl.event_subtype,
         )
-        out.put(row)
+        try:
+            out.put(row, timeout=120.0)
+        except queue.Full:
+            logger.error("Ingest queue full; dropping one event")
+            continue
         if label == "ssh" and pl.event_subtype in ("ssh_failed_password", "ssh_invalid_user"):
             inc_ssh_failed(pl.event_subtype or "unknown")
 
@@ -92,6 +98,31 @@ def start_ingestion_threads(
     return threads
 
 
+def _insert_batch_with_retry(conn, buf: list[SecurityEventRow]) -> bool:
+    """Insert batch; return True on success. On hard failure, drop batch and metric."""
+    from threat_pipeline.db import insert_security_events_batch
+
+    if not buf:
+        return True
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            insert_security_events_batch(conn, buf)
+            return True
+        except psycopg.DataError as e:
+            logger.error("Invalid row data, dropping %s events: %s", len(buf), e)
+            inc_ingest_dropped(len(buf))
+            return False
+        except (psycopg.OperationalError, psycopg.InterfaceError) as e:
+            last_err = e
+            logger.warning("Batch insert attempt %s/3 failed: %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+    logger.critical("Dropping %s events after DB failures: %s", len(buf), last_err)
+    inc_ingest_dropped(len(buf))
+    return False
+
+
 def batch_writer_loop(
     conn,
     q: queue.Queue,
@@ -99,9 +130,7 @@ def batch_writer_loop(
     flush_interval: float,
     stop: threading.Event,
 ) -> None:
-    from threat_pipeline.db import insert_security_events_batch
-
-    buf: list = []
+    buf: list[SecurityEventRow] = []
     last_flush = time.monotonic()
     while not stop.is_set():
         try:
@@ -114,16 +143,16 @@ def batch_writer_loop(
             by_source: dict[str, int] = {}
             for r in buf:
                 by_source[r.source] = by_source.get(r.source, 0) + 1
-            n = insert_security_events_batch(conn, buf)
-            for src, c in by_source.items():
-                inc_ingested(src, c)
-            logger.debug("Flushed %s events", n)
+            if _insert_batch_with_retry(conn, buf):
+                for src, c in by_source.items():
+                    inc_ingested(src, c)
+                logger.debug("Flushed %s events", len(buf))
             buf.clear()
             last_flush = now
     if buf:
-        insert_security_events_batch(conn, buf)
-        by: dict[str, int] = {}
+        by_source = {}
         for r in buf:
-            by[r.source] = by.get(r.source, 0) + 1
-        for src, c in by.items():
-            inc_ingested(src, c)
+            by_source[r.source] = by_source.get(r.source, 0) + 1
+        if _insert_batch_with_retry(conn, buf):
+            for src, c in by_source.items():
+                inc_ingested(src, c)
